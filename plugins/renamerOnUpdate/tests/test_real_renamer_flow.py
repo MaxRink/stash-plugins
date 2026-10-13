@@ -9,6 +9,7 @@ import sys
 import tempfile
 import types
 import importlib.util
+import os
 
 PLUGIN = pathlib.Path(__file__).parents[1]
 sys.path.insert(0, str(PLUGIN))
@@ -45,7 +46,7 @@ def _scene():
     return {
         "id": "1", "title": "Scene", "date": "2024-01-01", "organized": True,
         "tags": [], "studio": None, "performers": [], "stash_ids": [],
-        "files": [{"id": "77", "path": "/library/inbox/scene.mkv",
+        "files": [{"id": "77", "path": "/library/inbox/Scene.mkv",
                    "video_codec": "h264", "audio_codec": "aac", "width": 1920,
                    "height": 1080, "frame_rate": 30.0, "duration": 60.0,
                    "bit_rate": 1000000, "fingerprints": [{"type": "oshash", "value": "abc"}]}],
@@ -55,6 +56,7 @@ def _scene():
 def test_real_entry_refreshes_stale_dict_and_noops(tmp_path, monkeypatch):
     state_path = tmp_path / "scene.json"
     state_path.write_text(json.dumps(_scene()))
+    os.environ["ROU_LOCK_DIR"] = str(tmp_path / "locks")
     config = _Config("config")
     log = types.ModuleType("log")
     log.__getattr__ = lambda _name: (lambda *_args, **_kwargs: None)
@@ -82,8 +84,10 @@ def test_real_entry_refreshes_stale_dict_and_noops(tmp_path, monkeypatch):
             if "findScene" in query:
                 return Response({"data": {"findScene": scene}})
             if "moveFiles" in query:
-                scene["files"][0]["path"] = "/library/organized/scene.mkv"
+                scene["files"][0]["path"] = "/library/organized/Scene.mkv"
                 state_path.write_text(__import__("json").dumps(scene))
+                count_path = state_path.with_suffix(".moves")
+                count_path.write_text(str(int(count_path.read_text() or "0") + 1) if count_path.exists() else "1")
                 return Response({"data": {"moveFiles": True}})
             return Response({"data": {}})
 
@@ -102,8 +106,11 @@ def test_real_entry_refreshes_stale_dict_and_noops(tmp_path, monkeypatch):
 
     stale = _scene()
     stale["files"][0]["path"] = "/library/inbox/stale.mkv"
+    before = json.loads(json.dumps(stale))
     module.renamer(stale)
-    assert json.loads(state_path.read_text())["files"][0]["path"] == "/library/organized/scene.mkv"
+    assert stale == before
+    assert json.loads(state_path.read_text())["files"][0]["path"] == "/library/organized/Scene.mkv"
+    assert int(state_path.with_suffix(".moves").read_text()) == 1
 
 _REAL_MODULE = None
 
@@ -123,6 +130,7 @@ def test_real_entry_serializes_simultaneous_hooks(tmp_path, monkeypatch):
     # compact fixture below stubs only the same GraphQL operations.
     state_path = tmp_path / "scene.json"
     state_path.write_text(json.dumps(_scene()))
+    os.environ["ROU_LOCK_DIR"] = str(tmp_path / "locks")
     config = _Config("config")
     log = types.ModuleType("log")
     log.__getattr__ = lambda _name: (lambda *_args, **_kwargs: None)
@@ -144,12 +152,16 @@ def test_real_entry_serializes_simultaneous_hooks(tmp_path, monkeypatch):
                 return Response({"data": {"configuration": {"general": {"databasePath": "/db/stash.sqlite"}}}})
             scene = __import__("json").loads(state_path.read_text())
             if "findScenes" in query:
-                return Response({"data": {"findScenes": {"count": 0, "scenes": []}}})
+                if "scene_filter" in query:
+                    return Response({"data": {"findScenes": {"count": 0, "scenes": []}}})
+                return Response({"data": {"findScenes": {"count": 1, "scenes": [scene]}}})
             if "findScene" in query:
                 return Response({"data": {"findScene": scene}})
             if "moveFiles" in query:
-                scene["files"][0]["path"] = "/library/organized/scene.mkv"
+                scene["files"][0]["path"] = "/library/organized/Scene.mkv"
                 state_path.write_text(__import__("json").dumps(scene))
+                count_path = state_path.with_suffix(".moves")
+                count_path.write_text(str(int(count_path.read_text() or "0") + 1) if count_path.exists() else "1")
                 return Response({"data": {"moveFiles": True}})
             return Response({"data": {}})
 
@@ -167,7 +179,11 @@ def test_real_entry_serializes_simultaneous_hooks(tmp_path, monkeypatch):
         pass
     global _REAL_MODULE
     _REAL_MODULE = module
+    # The import above performs one bulk canary move; start the concurrent
+    # assertion from a fresh source and clear that canary's count.
     state_path.write_text(json.dumps(_scene()))
+    state_path.with_suffix(".moves").write_text("0")
+    monkeypatch.setattr(sys, "stdin", sys.__stdin__)
     ctx = __import__("multiprocessing").get_context("fork" if "fork" in __import__("multiprocessing").get_all_start_methods() else "spawn")
     outcomes = ctx.Queue()
     stale = _scene()
@@ -176,4 +192,5 @@ def test_real_entry_serializes_simultaneous_hooks(tmp_path, monkeypatch):
     for worker in workers: worker.join(5)
     assert all(worker.exitcode == 0 for worker in workers)
     assert sorted(outcomes.get(timeout=1) for _ in workers) == ["ok", "ok"]
-    assert json.loads(state_path.read_text())["files"][0]["path"] == "/library/organized/scene.mkv"
+    assert json.loads(state_path.read_text())["files"][0]["path"] == "/library/organized/Scene.mkv"
+    assert int(state_path.with_suffix(".moves").read_text()) == 1
