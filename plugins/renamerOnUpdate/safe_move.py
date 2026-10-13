@@ -26,10 +26,12 @@ def move_noclobber(source: str, target: str) -> None:
                 raise RuntimeError("source changed during no-clobber move")
             os.unlink(source)
         except Exception:
-            # Only remove the link just created.  If source was externally
-            # replaced, samefile is false and that replacement is preserved.
+            # Remove only the link we created. If source was replaced,
+            # compare target inode to the original descriptor so the
+            # replacement at source is preserved.
             try:
-                if os.path.samefile(source, target):
+                target_stat = os.stat(target, follow_symlinks=False)
+                if (target_stat.st_dev, target_stat.st_ino) == (source_stat.st_dev, source_stat.st_ino):
                     os.unlink(target)
             except (FileNotFoundError, OSError):
                 pass
