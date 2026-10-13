@@ -24,7 +24,7 @@ def _move_once(root, barrier, results):
 def test_two_hook_invocations_cannot_overwrite_target(tmp_path):
     source = tmp_path / "source.bin"
     source.write_bytes(b"stable bytes")
-    ctx = multiprocessing.get_context("spawn")
+    ctx = multiprocessing.get_context("fork" if "fork" in multiprocessing.get_all_start_methods() else "spawn")
     barrier = ctx.Barrier(2)
     results = ctx.Queue()
     workers = [ctx.Process(target=_move_once, args=(tmp_path, barrier, results)) for _ in range(2)]

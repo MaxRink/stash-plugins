@@ -9,14 +9,13 @@ from native_move import move_file
 from scene_lock import scene_lock
 
 
-def _hook(lock_root, state, calls, ready):
+def _hook(lock_root, state_path, calls):
     os.environ["ROU_LOCK_DIR"] = str(lock_root)
     with scene_lock("scene-7"):
-        # This is the renamer's refreshed scene read/no-op gate.  A second
-        # post hook must see the destination and avoid another move.
-        if state["path"] == "/library/organized/scene.mkv":
-            calls.append("noop")
-            ready.set()
+        # Refreshed scene read/no-op gate: a second post hook must see the
+        # destination and avoid another move.
+        if Path(state_path).read_text() == "/library/organized/scene.mkv":
+            calls.put("noop")
             return
 
         def fake_graphql(query, variables):
@@ -24,27 +23,25 @@ def _hook(lock_root, state, calls, ready):
             assert variables["input"]["ids"] == ["77"]
             assert variables["input"]["destination_folder"] == "/library/organized"
             assert variables["input"]["destination_basename"] == "scene.mkv"
-            state["path"] = "/library/organized/scene.mkv"
-            calls.append("move")
+            Path(state_path).write_text("/library/organized/scene.mkv")
+            calls.put("move")
             return {"moveFiles": True}
 
         move_file(fake_graphql, "77", "/library/organized", "scene.mkv")
-        ready.set()
 
 
 def test_repeated_post_hooks_refresh_and_noop(tmp_path):
-    ctx = multiprocessing.get_context("spawn")
-    manager = ctx.Manager()
-    state = manager.dict(path="/library/inbox/scene.mkv")
-    calls = manager.list()
-    ready = manager.Event()
-    args = (tmp_path, state, calls, ready)
+    ctx = multiprocessing.get_context("fork" if "fork" in multiprocessing.get_all_start_methods() else "spawn")
+    state_path = tmp_path / "state"
+    state_path.write_text("/library/inbox/scene.mkv")
+    calls = ctx.Queue()
+    args = (tmp_path, state_path, calls)
     first = ctx.Process(target=_hook, args=args)
     second = ctx.Process(target=_hook, args=args)
     first.start(); first.join(5)
     assert first.exitcode == 0
     second.start(); second.join(5)
     assert second.exitcode == 0
-    assert list(calls) == ["move", "noop"]
-    assert state["path"] == "/library/organized/scene.mkv"
-    manager.shutdown()
+    outcomes = sorted(calls.get(timeout=1) for _ in (first, second))
+    assert outcomes == ["move", "noop"]
+    assert state_path.read_text() == "/library/organized/scene.mkv"

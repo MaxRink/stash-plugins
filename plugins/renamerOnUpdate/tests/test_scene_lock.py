@@ -16,7 +16,7 @@ def _worker(lock_root, entered, release):
 
 
 def test_same_scene_hooks_are_serialized(tmp_path):
-    ctx = multiprocessing.get_context("spawn")
+    ctx = multiprocessing.get_context("fork" if "fork" in multiprocessing.get_all_start_methods() else "spawn")
     entered = ctx.Value("i", 0)
     release = ctx.Event()
     first = ctx.Process(target=_worker, args=(tmp_path, entered, release))
