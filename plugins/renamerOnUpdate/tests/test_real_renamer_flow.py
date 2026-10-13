@@ -84,7 +84,11 @@ def test_real_entry_refreshes_stale_dict_and_noops(tmp_path, monkeypatch):
             if "findScene" in query:
                 return Response({"data": {"findScene": scene}})
             if "moveFiles" in query:
-                scene["files"][0]["path"] = "/library/organized/Scene.mkv"
+                move_input = json["variables"]["input"]
+                selected = move_input["ids"][0]
+                for file_info in scene["files"]:
+                    if file_info["id"] == selected:
+                        file_info["path"] = move_input["destination_folder"] + "/" + move_input["destination_basename"]
                 state_path.write_text(__import__("json").dumps(scene))
                 count_path = state_path.with_suffix(".moves")
                 count_path.write_text(str(int(count_path.read_text() or "0") + 1) if count_path.exists() else "1")
@@ -158,7 +162,11 @@ def test_real_entry_serializes_simultaneous_hooks(tmp_path, monkeypatch):
             if "findScene" in query:
                 return Response({"data": {"findScene": scene}})
             if "moveFiles" in query:
-                scene["files"][0]["path"] = "/library/organized/Scene.mkv"
+                move_input = json["variables"]["input"]
+                selected = move_input["ids"][0]
+                for file_info in scene["files"]:
+                    if file_info["id"] == selected:
+                        file_info["path"] = move_input["destination_folder"] + "/" + move_input["destination_basename"]
                 state_path.write_text(__import__("json").dumps(scene))
                 count_path = state_path.with_suffix(".moves")
                 count_path.write_text(str(int(count_path.read_text() or "0") + 1) if count_path.exists() else "1")
@@ -181,7 +189,10 @@ def test_real_entry_serializes_simultaneous_hooks(tmp_path, monkeypatch):
     _REAL_MODULE = module
     # The import above performs one bulk canary move; start the concurrent
     # assertion from a fresh source and clear that canary's count.
-    state_path.write_text(json.dumps(_scene()))
+    multi = _scene()
+    multi["files"].append(dict(multi["files"][0], id="78", path="/library/inbox/Scene_2.mkv"))
+    multi["files"] = list(reversed(multi["files"]))
+    state_path.write_text(json.dumps(multi))
     state_path.with_suffix(".moves").write_text("0")
     monkeypatch.setattr(sys, "stdin", sys.__stdin__)
     ctx = __import__("multiprocessing").get_context("fork" if "fork" in __import__("multiprocessing").get_all_start_methods() else "spawn")
@@ -192,5 +203,8 @@ def test_real_entry_serializes_simultaneous_hooks(tmp_path, monkeypatch):
     for worker in workers: worker.join(5)
     assert all(worker.exitcode == 0 for worker in workers)
     assert sorted(outcomes.get(timeout=1) for _ in workers) == ["ok", "ok"]
-    assert json.loads(state_path.read_text())["files"][0]["path"] == "/library/organized/Scene.mkv"
-    assert int(state_path.with_suffix(".moves").read_text()) == 1
+    final = json.loads(state_path.read_text())
+    assert sorted(file_info["path"] for file_info in final["files"]) == [
+        "/library/organized/Scene.mkv", "/library/organized/Scene_1.mkv"
+    ]
+    assert int(state_path.with_suffix(".moves").read_text()) == 2
