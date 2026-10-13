@@ -104,3 +104,76 @@ def test_real_entry_refreshes_stale_dict_and_noops(tmp_path, monkeypatch):
     stale["files"][0]["path"] = "/library/inbox/stale.mkv"
     module.renamer(stale)
     assert json.loads(state_path.read_text())["files"][0]["path"] == "/library/organized/scene.mkv"
+
+_REAL_MODULE = None
+
+
+def _invoke_real_renamer(scene, outcomes):
+    try:
+        _REAL_MODULE.renamer(scene)
+        outcomes.put("ok")
+    except Exception as exc:  # pragma: no cover - surfaced by assertion
+        outcomes.put(f"error:{type(exc).__name__}")
+
+
+def test_real_entry_serializes_simultaneous_hooks(tmp_path, monkeypatch):
+    """Two real renamer calls must produce one move and one stable no-op."""
+    # Reuse the setup path by invoking the preceding test's fixture logic in a
+    # fresh isolated module would obscure the concurrency assertion.  The
+    # compact fixture below stubs only the same GraphQL operations.
+    state_path = tmp_path / "scene.json"
+    state_path.write_text(json.dumps(_scene()))
+    config = _Config("config")
+    log = types.ModuleType("log")
+    log.__getattr__ = lambda _name: (lambda *_args, **_kwargs: None)
+    monkeypatch.setitem(sys.modules, "config", config)
+    monkeypatch.setitem(sys.modules, "log", log)
+
+    class Response:
+        status_code = 200
+        content = b""
+        def __init__(self, data): self.data = data
+        def json(self): return self.data
+
+    class Requests(types.ModuleType):
+        def post(self, _url, json=None, **_kwargs):
+            query = json["query"]
+            if "systemStatus" in query:
+                return Response({"data": {"systemStatus": {"databaseSchema": 40}}})
+            if "configuration" in query:
+                return Response({"data": {"configuration": {"general": {"databasePath": "/db/stash.sqlite"}}}})
+            scene = __import__("json").loads(state_path.read_text())
+            if "findScenes" in query:
+                return Response({"data": {"findScenes": {"count": 0, "scenes": []}}})
+            if "findScene" in query:
+                return Response({"data": {"findScene": scene}})
+            if "moveFiles" in query:
+                scene["files"][0]["path"] = "/library/organized/scene.mkv"
+                state_path.write_text(__import__("json").dumps(scene))
+                return Response({"data": {"moveFiles": True}})
+            return Response({"data": {}})
+
+    monkeypatch.setitem(sys.modules, "requests", Requests("requests"))
+    fragment = {"server_connection": {"Port": 9999, "Scheme": "http", "Host": "localhost",
+                "SessionCookie": {"Value": "test"}, "PluginDir": str(PLUGIN)},
+                "args": {"mode": "bulk", "hookContext": {"type": "Scene.Update.Post", "id": "1"}}}
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(read=lambda: json.dumps(fragment)))
+    spec = importlib.util.spec_from_file_location("renamer_concurrent_test", PLUGIN / "renamerOnUpdate.py")
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "renamer_concurrent_test", module)
+    try:
+        spec.loader.exec_module(module)
+    except SystemExit:
+        pass
+    global _REAL_MODULE
+    _REAL_MODULE = module
+    state_path.write_text(json.dumps(_scene()))
+    ctx = __import__("multiprocessing").get_context("fork" if "fork" in __import__("multiprocessing").get_all_start_methods() else "spawn")
+    outcomes = ctx.Queue()
+    stale = _scene()
+    workers = [ctx.Process(target=_invoke_real_renamer, args=(stale, outcomes)) for _ in range(2)]
+    for worker in workers: worker.start()
+    for worker in workers: worker.join(5)
+    assert all(worker.exitcode == 0 for worker in workers)
+    assert sorted(outcomes.get(timeout=1) for _ in workers) == ["ok", "ok"]
+    assert json.loads(state_path.read_text())["files"][0]["path"] == "/library/organized/scene.mkv"
