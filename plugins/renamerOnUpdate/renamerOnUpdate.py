@@ -1027,6 +1027,27 @@ def create_new_path(scene_info: dict, template: dict):
     return new_path
 
 
+def checking_duplicate_db(scene_info: dict):
+    """Reject an exact path already represented by another Stash scene.
+
+    Final file conflicts are also checked by native moveFiles in its
+    transaction; this query only selects a deterministic suffix before that
+    mutation.
+    """
+    scenes = graphql_findScenebyPath(scene_info["final_path"], "EQUALS")
+    if scenes["count"] > 0:
+        log.LogError("Duplicate path detected")
+        for dupl_row in scenes["scenes"]:
+            log.LogWarning(f"Identical path: [{dupl_row['id']}]")
+        return 1
+    scenes = graphql_findScenebyPath(scene_info["new_filename"], "EQUALS")
+    if scenes["count"] > 0:
+        for dupl_row in scenes["scenes"]:
+            if dupl_row["id"] != scene_info["scene_id"]:
+                log.LogWarning(f"Duplicate filename: [{dupl_row['id']}]")
+    return 0
+
+
 def associated_rename(scene_info: dict):
     if ASSOCIATED_EXT:
         for ext in ASSOCIATED_EXT:
