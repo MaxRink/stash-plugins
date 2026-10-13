@@ -3,7 +3,6 @@ import json
 import os
 import re
 import shutil
-import sqlite3
 import sys
 import time
 import traceback
@@ -1040,167 +1039,6 @@ def create_new_path(scene_info: dict, template: dict):
     return new_path
 
 
-def connect_db(path: str):
-    try:
-        sqliteConnection = sqlite3.connect(path, timeout=10)
-        log.LogDebug("Python successfully connected to SQLite")
-    except sqlite3.Error as error:
-        log.LogError(f"FATAL SQLITE Error: {error}")
-        return None
-    return sqliteConnection
-
-
-def checking_duplicate_db(scene_info: dict):
-    scenes = graphql_findScenebyPath(scene_info["final_path"], "EQUALS")
-    if scenes["count"] > 0:
-        log.LogError("Duplicate path detected")
-        for dupl_row in scenes["scenes"]:
-            log.LogWarning(f"Identical path: [{dupl_row['id']}]")
-        return 1
-    scenes = graphql_findScenebyPath(scene_info["new_filename"], "EQUALS")
-    if scenes["count"] > 0:
-        for dupl_row in scenes["scenes"]:
-            if dupl_row["id"] != scene_info["scene_id"]:
-                log.LogWarning(f"Duplicate filename: [{dupl_row['id']}]")
-
-
-def db_rename(stash_db: sqlite3.Connection, scene_info):
-    cursor = stash_db.cursor()
-    # Database rename
-    cursor.execute(
-        "UPDATE scenes SET path=? WHERE id=?;",
-        [scene_info["final_path"], scene_info["scene_id"]],
-    )
-    stash_db.commit()
-    # Close DB
-    cursor.close()
-
-
-def files_table_has_path(stash_db: sqlite3.Connection, folder_path: str, basename: str) -> bool:
-    """Return True if the files table already has a record at (folder_path, basename).
-    Used to detect file-level UNIQUE constraint conflicts before the OS move."""
-    cursor = stash_db.cursor()
-    cursor.execute("SELECT id FROM folders WHERE path=?", [folder_path])
-    row = cursor.fetchall()
-    cursor.close()
-    if not row:
-        return False
-    folder_id = row[0][0]
-    cursor = stash_db.cursor()
-    cursor.execute(
-        "SELECT id FROM files WHERE parent_folder_id=? AND basename=?",
-        [folder_id, basename],
-    )
-    conflict = cursor.fetchall()
-    cursor.close()
-    return len(conflict) > 0
-
-
-def db_rename_refactor(stash_db: sqlite3.Connection, scene_info):
-    cursor = stash_db.cursor()
-    # 2022-09-17T11:25:52+02:00
-    mod_time = datetime.now().astimezone().isoformat("T", "seconds")
-
-    # get the next id that we should use if needed
-    cursor.execute("SELECT MAX(id) from folders")
-    new_id = cursor.fetchall()[0][0] + 1
-
-    # get the old folder id
-    cursor.execute(
-        "SELECT id FROM folders WHERE path=?", [scene_info["current_directory"]]
-    )
-    old_folder_id = cursor.fetchall()[0][0]
-
-    # check if the folder of file is created in db
-    cursor.execute("SELECT id FROM folders WHERE path=?", [scene_info["new_directory"]])
-    folder_id = cursor.fetchall()
-    if not folder_id:
-        dir = scene_info["new_directory"]
-        # reduce the path to find a parent folder
-        for _ in range(1, len(scene_info["new_directory"].split(os.sep))):
-            dir = os.path.dirname(dir)
-            cursor.execute("SELECT id FROM folders WHERE path=?", [dir])
-            parent_id = cursor.fetchall()
-            if parent_id:
-                folder_basename = os.path.basename(scene_info["new_directory"])
-                # Check if folder already exists by (parent_folder_id, basename).
-                # Path lookup above may fail due to normalization differences.
-                cursor.execute(
-                    "SELECT id FROM folders WHERE parent_folder_id=? AND basename=?",
-                    [parent_id[0][0], folder_basename],
-                )
-                existing = cursor.fetchall()
-                if existing:
-                    folder_id = existing[0][0]
-                    log.LogDebug(
-                        f"Folder already exists in DB (found by parent+basename), reusing id={folder_id}"
-                    )
-                else:
-                    # Create a new row for the new folder with the parent folder found above
-                    cursor.execute(
-                        "INSERT INTO 'main'.'folders'('id', 'path', 'basename', 'parent_folder_id', 'mod_time', 'created_at', 'updated_at', 'zip_file_id') VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
-                        [
-                            new_id,
-                            scene_info["new_directory"],
-                            folder_basename,
-                            parent_id[0][0],
-                            mod_time,
-                            mod_time,
-                            mod_time,
-                            None,
-                        ],
-                    )
-                    stash_db.commit()
-                    folder_id = new_id
-                break
-    else:
-        folder_id = folder_id[0][0]
-    if folder_id:
-        cursor.execute(
-            "SELECT file_id from scenes_files WHERE scene_id=?",
-            [scene_info["scene_id"]],
-        )
-        file_ids = cursor.fetchall()
-        file_id = None
-        for f in file_ids:
-            # it can have multiple file for a scene
-            cursor.execute("SELECT parent_folder_id from files WHERE id=?", [f[0]])
-            check_parent = cursor.fetchall()[0][0]
-            # if the parent id is the one found above section, we find our file.s
-            if check_parent == old_folder_id:
-                file_id = f[0]
-                break
-        if file_id:
-            # Guard against UNIQUE(parent_folder_id, basename) conflict on the files table
-            # before issuing the UPDATE.
-            cursor.execute(
-                "SELECT id FROM files WHERE parent_folder_id=? AND basename=? AND id!=?;",
-                [folder_id, scene_info["new_filename"], file_id],
-            )
-            conflict = cursor.fetchall()
-            if conflict:
-                cursor.close()
-                raise Exception(
-                    f"UNIQUE constraint would fail: files.parent_folder_id, files.basename "
-                    f"— target '{scene_info['new_filename']}' in folder {folder_id} is already "
-                    f"used by file id {conflict[0][0]}"
-                )
-            # log.LogDebug(f"UPDATE files SET basename={scene_info['new_filename']}, parent_folder_id={folder_id}, updated_at={mod_time} WHERE id={file_id};")
-            cursor.execute(
-                "UPDATE files SET basename=?, parent_folder_id=?, updated_at=? WHERE id=?;",
-                [scene_info["new_filename"], folder_id, mod_time, file_id],
-            )
-            cursor.close()
-            stash_db.commit()
-        else:
-            raise Exception("Failed to find file_id")
-    else:
-        cursor.close()
-        raise Exception(
-            f"You need to setup a library with the new location ({scene_info['new_directory']}) and scan at least 1 file"
-        )
-
-
 def file_rename(current_path: str, new_path: str, scene_info: dict):
     # OS Rename
     if not os.path.isfile(current_path):
@@ -1776,8 +1614,7 @@ if PLUGIN_ARGS:
                 log.LogError(f"main function error: {err}")
             progress += progress_step
             log.LogProgress(progress)
-        stash_db.close()
-        log.LogInfo("[SQLITE] Database closed!")
+        # Native moveFiles owns each transaction.
 else:
     try:
         renamer(FRAGMENT_SCENE_ID)
