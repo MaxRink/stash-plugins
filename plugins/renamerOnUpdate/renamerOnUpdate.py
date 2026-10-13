@@ -1,7 +1,4 @@
 import difflib
-import contextlib
-import errno
-import tempfile
 import json
 import os
 import re
@@ -32,8 +29,10 @@ import log
 
 try:
     from safe_move import move_noclobber
+    from scene_lock import scene_lock
 except ImportError:
     from .safe_move import move_noclobber
+    from .scene_lock import scene_lock
 
 try:
     import config
@@ -1375,33 +1374,11 @@ def is_excluded(stash_scene: dict) -> bool:
     return False
 
 
-@contextlib.contextmanager
-def _scene_lock(scene_id):
-    """Serialize all renames for one scene across hook processes."""
-    lock_root = os.environ.get("ROU_LOCK_DIR", os.path.join(tempfile.gettempdir(), "stash-renamer-locks"))
-    os.makedirs(lock_root, mode=0o700, exist_ok=True)
-    lock_path = os.path.join(lock_root, "scene-{}.lock".format(re.sub(r"[^A-Za-z0-9_.-]", "_", str(scene_id))))
-    with open(lock_path, "a+", encoding="ascii") as lock_file:
-        try:
-            import fcntl
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        except ImportError:
-            pass
-        try:
-            yield
-        finally:
-            try:
-                import fcntl
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-            except ImportError:
-                pass
-
-
 def renamer(scene_id, db_conn=None):
     # The complete scene read, target selection and DB update must be one
     # critical section.  Scene.Update.Post may be delivered concurrently.
     lock_id = scene_id.get("id") if isinstance(scene_id, dict) else scene_id
-    with _scene_lock(lock_id):
+    with scene_lock(lock_id):
         return _renamer(scene_id, db_conn)
 
 
