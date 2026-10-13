@@ -124,8 +124,9 @@ def test_real_entry_refreshes_stale_dict_and_noops(tmp_path, monkeypatch):
 _REAL_MODULE = None
 
 
-def _invoke_real_renamer(scene, outcomes):
+def _invoke_real_renamer(scene, outcomes, barrier):
     try:
+        barrier.wait()
         _REAL_MODULE.renamer(scene)
         outcomes.put("ok")
     except Exception as exc:  # pragma: no cover - surfaced by assertion
@@ -208,8 +209,9 @@ def test_real_entry_serializes_simultaneous_hooks(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "stdin", sys.__stdin__)
     ctx = __import__("multiprocessing").get_context("fork" if "fork" in __import__("multiprocessing").get_all_start_methods() else "spawn")
     outcomes = ctx.Queue()
+    barrier = ctx.Barrier(2)
     stale = _scene()
-    workers = [ctx.Process(target=_invoke_real_renamer, args=(stale, outcomes)) for _ in range(2)]
+    workers = [ctx.Process(target=_invoke_real_renamer, args=(stale, outcomes, barrier)) for _ in range(2)]
     for worker in workers: worker.start()
     for worker in workers: worker.join(5)
     assert all(worker.exitcode == 0 for worker in workers)
