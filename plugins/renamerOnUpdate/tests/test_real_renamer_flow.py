@@ -89,9 +89,14 @@ def test_real_entry_refreshes_stale_dict_and_noops(tmp_path, monkeypatch):
                 for file_info in scene["files"]:
                     if file_info["id"] == selected:
                         file_info["path"] = move_input["destination_folder"] + "/" + move_input["destination_basename"]
-                state_path.write_text(__import__("json").dumps(scene))
                 count_path = state_path.with_suffix(".moves")
-                count_path.write_text(str(int(count_path.read_text() or "0") + 1) if count_path.exists() else "1")
+                count = int(count_path.read_text() or "0") + 1 if count_path.exists() else 1
+                # Simulate a primary-file change: after the first complete
+                # multi-file hook, Stash returns the files in reverse order.
+                if count == 2 and len(scene["files"]) > 1:
+                    scene["files"] = list(reversed(scene["files"]))
+                state_path.write_text(__import__("json").dumps(scene))
+                count_path.write_text(str(count))
                 return Response({"data": {"moveFiles": True}})
             return Response({"data": {}})
 
@@ -167,9 +172,14 @@ def test_real_entry_serializes_simultaneous_hooks(tmp_path, monkeypatch):
                 for file_info in scene["files"]:
                     if file_info["id"] == selected:
                         file_info["path"] = move_input["destination_folder"] + "/" + move_input["destination_basename"]
-                state_path.write_text(__import__("json").dumps(scene))
                 count_path = state_path.with_suffix(".moves")
-                count_path.write_text(str(int(count_path.read_text() or "0") + 1) if count_path.exists() else "1")
+                count = int(count_path.read_text() or "0") + 1 if count_path.exists() else 1
+                # Simulate a primary-file change: after the first complete
+                # multi-file hook, Stash returns the files in reverse order.
+                if count == 2 and len(scene["files"]) > 1:
+                    scene["files"] = list(reversed(scene["files"]))
+                state_path.write_text(__import__("json").dumps(scene))
+                count_path.write_text(str(count))
                 return Response({"data": {"moveFiles": True}})
             return Response({"data": {}})
 
@@ -191,6 +201,7 @@ def test_real_entry_serializes_simultaneous_hooks(tmp_path, monkeypatch):
     # assertion from a fresh source and clear that canary's count.
     multi = _scene()
     multi["files"].append(dict(multi["files"][0], id="78", path="/library/inbox/Scene_2.mkv"))
+    multi["primary_file_id"] = "78"
     multi["files"] = list(reversed(multi["files"]))
     state_path.write_text(json.dumps(multi))
     state_path.with_suffix(".moves").write_text("0")
