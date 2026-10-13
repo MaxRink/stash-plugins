@@ -84,13 +84,23 @@ def test_real_entry_refreshes_stale_dict_and_noops(tmp_path, monkeypatch):
             scene = __import__("json").loads(state_path.read_text())
             if "findScenes" in query:
                 if "scene_filter" in query:
-                    return Response({"data": {"findScenes": {"count": 0, "scenes": []}}})
+                    value = json["variables"]["scene_filter"]["path"]["value"]
+                    matches = [
+                        {"id": file_info["id"], "title": scene["title"]}
+                        for file_info in scene["files"]
+                        if file_info["path"] == value
+                    ]
+                    return Response({"data": {"findScenes": {"count": len(matches), "scenes": matches}}})
                 return Response({"data": {"findScenes": {"count": 1, "scenes": [scene]}}})
             if "findScene" in query:
                 return Response({"data": {"findScene": scene}})
             if "moveFiles" in query:
                 move_input = json["variables"]["input"]
                 selected = move_input["ids"][0]
+                scene = __import__("json").loads(state_path.read_text())
+                target = move_input["destination_folder"] + "/" + move_input["destination_basename"]
+                if any(file_info["id"] != selected and file_info["path"] == target for file_info in scene["files"]):
+                    return Response({"data": {"moveFiles": False}})
                 for file_info in scene["files"]:
                     if file_info["id"] == selected:
                         file_info["path"] = move_input["destination_folder"] + "/" + move_input["destination_basename"]
@@ -137,6 +147,21 @@ def test_real_entry_refreshes_stale_dict_and_noops(tmp_path, monkeypatch):
     moved = json.loads(state_path.read_text())["files"][0]["path"]
     assert moved == "/library/organized/" + ("T" * 215) + ".mkv"
     assert len(moved) <= 240
+
+    # An already-organized _1 file followed by a newly imported file must not
+    # make the new file reuse suffix index 1.  The fake native mover rejects
+    # that target exactly as Stash does when the path is occupied.
+    existing = _scene()
+    existing["files"][0]["path"] = "/library/organized/Alice - Scene_1.mkv"
+    existing["files"].append(dict(existing["files"][0], id="78", path="/library/inbox/new.mkv"))
+    state_path.write_text(json.dumps(existing))
+    state_path.with_suffix(".moves").write_text("0")
+    module.renamer(_scene())
+    final = json.loads(state_path.read_text())
+    by_id = {file_info["id"]: file_info["path"] for file_info in final["files"]}
+    assert by_id["77"] == "/library/organized/Alice - Scene_1.mkv"
+    assert by_id["78"] == "/library/organized/Alice - Scene.mkv"
+    assert int(state_path.with_suffix(".moves").read_text()) == 1
 
 _REAL_MODULE = None
 
@@ -187,6 +212,8 @@ def test_real_entry_serializes_simultaneous_hooks(tmp_path, monkeypatch):
             if "moveFiles" in query:
                 move_input = json["variables"]["input"]
                 selected = move_input["ids"][0]
+                scene = __import__("json").loads(state_path.read_text())
+                target = move_input["destination_folder"] + "/" + move_input["destination_basename"]
                 for file_info in scene["files"]:
                     if file_info["id"] == selected:
                         file_info["path"] = move_input["destination_folder"] + "/" + move_input["destination_basename"]

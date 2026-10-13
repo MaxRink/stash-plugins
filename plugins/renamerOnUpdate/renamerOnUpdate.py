@@ -1303,6 +1303,7 @@ def _renamer(scene_id, db_conn=None):
         # and churn forever.  This runs after path shortening so short paths
         # retain all configured metadata fields.
         if len(scene_files) > 1 and template.get("filename"):
+            matched_existing_target = False
             for candidate_index in range(len(DUPLICATE_SUFFIX)):
                 if candidate_index in claimed_target_indices:
                     continue
@@ -1319,8 +1320,32 @@ def _renamer(scene_id, db_conn=None):
                     scene_information["new_directory"] = candidate_dir
                     scene_information["final_path"] = candidate_path
                     claimed_target_indices.add(candidate_index)
+                    matched_existing_target = True
                     break
                 scene_information["file_index"] = i
+
+            # A newly imported file has no existing suffix mapping.  Its loop
+            # index can nevertheless already be reserved by an earlier file
+            # (for example an existing ``_1`` followed by a new file).  Pick
+            # the first free suffix rather than sending a known collision to
+            # the native mover.  Existing mappings above always win.
+            if not matched_existing_target and scene_information["file_index"] in claimed_target_indices:
+                for candidate_index in range(len(DUPLICATE_SUFFIX)):
+                    if candidate_index in claimed_target_indices:
+                        continue
+                    scene_information["file_index"] = candidate_index
+                    scene_information["new_filename"] = create_new_filename(
+                        scene_information, template["filename"]
+                    )
+                    scene_information["new_directory"] = (
+                        create_new_path(scene_information, template)
+                        if template.get("path")
+                        else scene_information["current_directory"]
+                    )
+                    scene_information["final_path"] = os.path.join(
+                        scene_information["new_directory"], scene_information["new_filename"]
+                    )
+                    break
 
         if check_longpath(scene_information["final_path"]):
             if (DRY_RUN or option_dryrun) and LOGFILE:
