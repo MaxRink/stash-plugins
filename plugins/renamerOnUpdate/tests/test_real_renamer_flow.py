@@ -83,7 +83,7 @@ def test_real_entry_refreshes_stale_dict_and_noops(tmp_path, monkeypatch):
                 return Response({"data": {"findScene": scene}})
             if "moveFiles" in query:
                 scene["files"][0]["path"] = "/library/organized/scene.mkv"
-                state_path.write_text(json.dumps(scene))
+                state_path.write_text(__import__("json").dumps(scene))
                 return Response({"data": {"moveFiles": True}})
             return Response({"data": {}})
 
