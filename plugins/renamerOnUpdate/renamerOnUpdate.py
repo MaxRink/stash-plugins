@@ -300,6 +300,24 @@ def graphql_getStudio(studio_id):
     return result.get("findStudio")
 
 
+def graphql_move_file(file_id: str, destination_folder: str, destination_basename: str):
+    """Move one file through Stash's transactional native mover."""
+    query = """
+    mutation MoveFiles($input: MoveFilesInput!) {
+        moveFiles(input: $input)
+    }
+    """
+    variables = {"input": {
+        "ids": [str(file_id)],
+        "destination_folder": destination_folder,
+        "destination_basename": destination_basename,
+    }}
+    result = callGraphQL(query, variables)
+    if not result or result.get("moveFiles") is not True:
+        raise RuntimeError(f"native moveFiles rejected file {file_id}")
+    return True
+
+
 def graphql_removeScenesTag(id_scenes: list, id_tags: list):
     query = """
     mutation BulkSceneUpdate($input: BulkSceneUpdateInput!) {
@@ -1570,64 +1588,22 @@ def _renamer(scene_id, db_conn=None):
         # abort
         if err:
             raise Exception("duplicate")
-        # connect to the db
-        if not db_conn:
-            stash_db = connect_db(STASH_DATABASE)
-            if stash_db is None:
-                return
-        else:
-            stash_db = db_conn
         try:
-            # Check the files table for a (parent_folder_id, basename) conflict BEFORE
-            # moving the file on disk. The GraphQL duplicate check queries scenes, not
-            # files, so it can miss conflicts when multiple resolution variants of the
-            # same scene are renamed concurrently and resolve to the same suffixed name
-            # (as configured via duplicate_suffix).
-            target_dir = scene_information["new_directory"]
-            target_base = scene_information["new_filename"]
-            while files_table_has_path(stash_db, target_dir, target_base):
-                log.LogDebug(
-                    f"[FILES TABLE] Conflict for '{target_base}' in '{target_dir}', increasing file index"
-                )
-                scene_information["file_index"] = scene_information["file_index"] + 1
-                if scene_information["file_index"] > len(DUPLICATE_SUFFIX):
-                    raise Exception("duplicate")
-                scene_information["new_filename"] = create_new_filename(
-                    scene_information, template["filename"]
-                )
-                scene_information["final_path"] = os.path.join(
-                    target_dir, scene_information["new_filename"]
-                )
-                target_base = scene_information["new_filename"]
-                log.LogDebug(f"[NEW filename] {scene_information['new_filename']}")
-                log.LogDebug(f"[NEW path] {scene_information['final_path']}")
-
-            # rename file on your disk
-            err = file_rename(
-                scene_information["current_path"],
-                scene_information["final_path"],
-                scene_information,
+            # Stash's native mover performs the filesystem move and database
+            # update in one transaction, including conflict checks.  Keep the
+            # scene lock around this call so concurrent hooks cannot select
+            # the same target.
+            file_id = scene_file.get("id")
+            if not file_id:
+                raise RuntimeError("scene file has no native file id")
+            graphql_move_file(
+                file_id,
+                scene_information["new_directory"],
+                scene_information["new_filename"],
             )
-            if err:
-                raise Exception("rename")
-            # rename file on your db
-            try:
-                if DB_VERSION >= DB_VERSION_FILE_REFACTOR:
-                    db_rename_refactor(stash_db, scene_information)
-                else:
-                    db_rename(stash_db, scene_information)
-            except Exception as err:
-                log.LogError(
-                    f"error when trying to update the database ({err}), revert the move..."
-                )
-                err = file_rename(
-                    scene_information["final_path"],
-                    scene_information["current_path"],
-                    scene_information,
-                )
-                if err:
-                    raise Exception("rename")
-                raise Exception("database update")
+        except Exception as err:
+            log.LogError(f"Native moveFiles failed: {err}")
+            continue
             if i == 0:
                 associated_rename(scene_information)
             if template.get("path"):
@@ -1637,14 +1613,8 @@ def _renamer(scene_id, db_conn=None):
                         template["path"]["opt_details"]["clean_tag"],
                     )
         except Exception as err:
-            log.LogError(f"Error during database operation ({err})")
-            if not db_conn:
-                log.LogDebug("[SQLITE] Database closed")
-                stash_db.close()
+            log.LogError(f"Error during native move operation ({err})")
             continue
-    if not db_conn and stash_db:
-        stash_db.close()
-        log.LogInfo("[SQLITE] Database updated and closed!")
 
 
 def exit_plugin(msg=None, err=None):
@@ -1757,6 +1727,7 @@ DB_VERSION = graphql_getBuild()
 if DB_VERSION >= DB_VERSION_FILE_REFACTOR:
     FILE_QUERY = """
             files {
+                id
                 path
                 video_codec
                 audio_codec
@@ -1796,9 +1767,7 @@ if PLUGIN_ARGS:
         log.LogDebug(f"Count scenes: {len(scenes['scenes'])}")
         progress = 0
         progress_step = 1 / len(scenes["scenes"])
-        stash_db = connect_db(STASH_DATABASE)
-        if stash_db is None:
-            exit_plugin()
+        stash_db = None
         for scene in scenes["scenes"]:
             log.LogDebug(f"** Checking scene: {scene['title']} - {scene['id']} **")
             try:
