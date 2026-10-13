@@ -1151,11 +1151,16 @@ def is_excluded(stash_scene: dict) -> bool:
 
 
 def renamer(scene_id, db_conn=None):
-    # The complete scene read, target selection and DB update must be one
-    # critical section.  Scene.Update.Post may be delivered concurrently.
+    # The complete scene read, target selection and native move must be one
+    # critical section. Scene.Update.Post may be delivered concurrently.
+    # Always refresh by ID, including bulk callers that pass a slim/stale dict;
+    # this also prevents _renamer from mutating the caller's object.
     lock_id = scene_id.get("id") if isinstance(scene_id, dict) else scene_id
     with scene_lock(lock_id):
-        return _renamer(scene_id, db_conn)
+        fresh_scene = graphql_getScene(lock_id)
+        if not fresh_scene:
+            raise RuntimeError(f"scene {lock_id} disappeared during rename")
+        return _renamer(fresh_scene, db_conn)
 
 
 def _renamer(scene_id, db_conn=None):
