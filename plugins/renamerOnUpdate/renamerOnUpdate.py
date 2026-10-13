@@ -27,9 +27,11 @@ except Exception:
 import log
 
 try:
+    from native_move import move_file as native_move_file
     from safe_move import move_noclobber
     from scene_lock import scene_lock
 except ImportError:
+    from .native_move import move_file as native_move_file
     from .safe_move import move_noclobber
     from .scene_lock import scene_lock
 
@@ -300,21 +302,7 @@ def graphql_getStudio(studio_id):
 
 
 def graphql_move_file(file_id: str, destination_folder: str, destination_basename: str):
-    """Move one file through Stash's transactional native mover."""
-    query = """
-    mutation MoveFiles($input: MoveFilesInput!) {
-        moveFiles(input: $input)
-    }
-    """
-    variables = {"input": {
-        "ids": [str(file_id)],
-        "destination_folder": destination_folder,
-        "destination_basename": destination_basename,
-    }}
-    result = callGraphQL(query, variables)
-    if not result or result.get("moveFiles") is not True:
-        raise RuntimeError(f"native moveFiles rejected file {file_id}")
-    return True
+    return native_move_file(callGraphQL, file_id, destination_folder, destination_basename)
 
 
 def graphql_removeScenesTag(id_scenes: list, id_tags: list):
