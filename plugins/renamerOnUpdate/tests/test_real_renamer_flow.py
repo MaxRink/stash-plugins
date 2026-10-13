@@ -163,6 +163,21 @@ def test_real_entry_refreshes_stale_dict_and_noops(tmp_path, monkeypatch):
     assert by_id["78"] == "/library/organized/Alice - Scene.mkv"
     assert int(state_path.with_suffix(".moves").read_text()) == 1
 
+    # The inverse order is equally important: a new import may precede the
+    # already-organized canonical file in Stash's response.
+    inverse = _scene()
+    canonical = dict(inverse["files"][0], path="/library/organized/Alice - Scene.mkv")
+    imported = dict(inverse["files"][0], id="78", path="/library/inbox/new.mkv")
+    inverse["files"] = [imported, canonical]
+    state_path.write_text(json.dumps(inverse))
+    state_path.with_suffix(".moves").write_text("0")
+    module.renamer(_scene())
+    final = json.loads(state_path.read_text())
+    by_id = {file_info["id"]: file_info["path"] for file_info in final["files"]}
+    assert by_id["77"] == "/library/organized/Alice - Scene.mkv"
+    assert by_id["78"] == "/library/organized/Alice - Scene_1.mkv"
+    assert int(state_path.with_suffix(".moves").read_text()) == 1
+
 _REAL_MODULE = None
 
 

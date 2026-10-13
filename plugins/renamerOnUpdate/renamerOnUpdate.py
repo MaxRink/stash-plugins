@@ -1297,6 +1297,28 @@ def _renamer(scene_id, db_conn=None):
             if IGNORE_PATH_LENGTH or len(scene_information["final_path"]) <= 240:
                 break
 
+        # Reserve destinations already occupied by later files in this scene
+        # before assigning a newly imported file.  Without this pre-pass an
+        # import that appears first in Stash's file order can select the
+        # canonical destination and make the later canonical file collide.
+        if len(scene_files) > 1 and template.get("filename"):
+            for candidate_index in range(len(DUPLICATE_SUFFIX)):
+                candidate_information = dict(scene_information)
+                candidate_information["file_index"] = candidate_index
+                candidate_name = create_new_filename(candidate_information, template["filename"])
+                candidate_dir = (
+                    create_new_path(candidate_information, template)
+                    if template.get("path")
+                    else candidate_information["current_directory"]
+                )
+                candidate_path = os.path.normpath(os.path.join(candidate_dir, candidate_name))
+                if any(
+                    other is not scene_file
+                    and os.path.normpath(other.get("path", "")) == candidate_path
+                    for other in scene_files
+                ):
+                    claimed_target_indices.add(candidate_index)
+
         # Preserve an already-correct file-to-suffix mapping when Stash changes
         # the order of a scene's files (for example after a primary file switch).
         # Loop-index-only naming would swap two correct paths on the next hook
@@ -1305,8 +1327,6 @@ def _renamer(scene_id, db_conn=None):
         if len(scene_files) > 1 and template.get("filename"):
             matched_existing_target = False
             for candidate_index in range(len(DUPLICATE_SUFFIX)):
-                if candidate_index in claimed_target_indices:
-                    continue
                 scene_information["file_index"] = candidate_index
                 candidate_name = create_new_filename(scene_information, template["filename"])
                 candidate_dir = (
@@ -1315,6 +1335,16 @@ def _renamer(scene_id, db_conn=None):
                     else scene_information["current_directory"]
                 )
                 candidate_path = os.path.join(candidate_dir, candidate_name)
+                # A pre-reserved index may belong to this file's own existing
+                # path.  Allow that exact match; only skip it when it would
+                # assign a new file to a target reserved by another file.
+                if (
+                    candidate_index in claimed_target_indices
+                    and os.path.normpath(candidate_path)
+                    != os.path.normpath(scene_information["current_path"])
+                ):
+                    scene_information["file_index"] = i
+                    continue
                 if os.path.normpath(candidate_path) == os.path.normpath(scene_information["current_path"]):
                     scene_information["new_filename"] = candidate_name
                     scene_information["new_directory"] = candidate_dir
