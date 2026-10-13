@@ -1,4 +1,7 @@
 import difflib
+import contextlib
+import errno
+import tempfile
 import json
 import os
 import re
@@ -26,6 +29,11 @@ except Exception:
     MODULE_UNIDECODE = False
 
 import log
+
+try:
+    from safe_move import move_noclobber
+except ImportError:
+    from .safe_move import move_noclobber
 
 try:
     import config
@@ -1188,7 +1196,12 @@ def file_rename(current_path: str, new_path: str, scene_info: dict):
         log.LogInfo(f"Creating folder because it don't exist ({new_dir})")
         os.makedirs(new_dir)
     try:
-        shutil.move(current_path, new_path)
+        # Never replace an existing target.  The old shutil.move call could
+        # overwrite a target selected by a concurrent hook invocation.
+        move_noclobber(current_path, new_path)
+    except FileExistsError as err:
+        log.LogError(f"Target already exists; refusing to overwrite ({new_path})")
+        return 1
     except PermissionError as err:
         if "[WinError 32]" in str(err) and MODULE_PSUTIL:
             log.LogWarning(
@@ -1205,7 +1218,7 @@ def file_rename(current_path: str, new_path: str, scene_info: dict):
                     p.wait(10)
                     # If process is not terminated, this will create an error again.
                     try:
-                        shutil.move(current_path, new_path)
+                        move_noclobber(current_path, new_path)
                     except Exception as err:
                         log.LogError(
                             f"Something still prevents renaming the file. {err}"
@@ -1239,7 +1252,7 @@ def file_rename(current_path: str, new_path: str, scene_info: dict):
                         f"{scene_info['scene_id']}|{current_path}|{new_path}|{scene_info['oshash']}\n"
                     )
             except Exception as err:
-                shutil.move(new_path, current_path)
+                move_noclobber(new_path, current_path)
                 log.LogError(
                     f"Restoring the original path, error writing the logfile: {err}"
                 )
@@ -1267,7 +1280,7 @@ def associated_rename(scene_info: dict):
             p_new = os.path.splitext(scene_info["final_path"])[0] + "." + ext
             if os.path.isfile(p):
                 try:
-                    shutil.move(p, p_new)
+                    move_noclobber(p, p_new)
                 except Exception as err:
                     log.LogError(
                         f"Something prevents renaming this file '{p}' - err: {err}"
@@ -1280,7 +1293,7 @@ def associated_rename(scene_info: dict):
                         with open(LOGFILE, "a", encoding="utf-8") as f:
                             f.write(f"{scene_info['scene_id']}|{p}|{p_new}\n")
                     except Exception as err:
-                        shutil.move(p_new, p)
+                        move_noclobber(p_new, p)
                         log.LogError(
                             f"Restoring the original name, error writing the logfile: {err}"
                         )
@@ -1362,7 +1375,37 @@ def is_excluded(stash_scene: dict) -> bool:
     return False
 
 
+@contextlib.contextmanager
+def _scene_lock(scene_id):
+    """Serialize all renames for one scene across hook processes."""
+    lock_root = os.environ.get("ROU_LOCK_DIR", os.path.join(tempfile.gettempdir(), "stash-renamer-locks"))
+    os.makedirs(lock_root, mode=0o700, exist_ok=True)
+    lock_path = os.path.join(lock_root, "scene-{}.lock".format(re.sub(r"[^A-Za-z0-9_.-]", "_", str(scene_id))))
+    with open(lock_path, "a+", encoding="ascii") as lock_file:
+        try:
+            import fcntl
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        except ImportError:
+            pass
+        try:
+            yield
+        finally:
+            try:
+                import fcntl
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except ImportError:
+                pass
+
+
 def renamer(scene_id, db_conn=None):
+    # The complete scene read, target selection and DB update must be one
+    # critical section.  Scene.Update.Post may be delivered concurrently.
+    lock_id = scene_id.get("id") if isinstance(scene_id, dict) else scene_id
+    with _scene_lock(lock_id):
+        return _renamer(scene_id, db_conn)
+
+
+def _renamer(scene_id, db_conn=None):
     option_dryrun = False
     if type(scene_id) is dict:
         stash_scene = scene_id
