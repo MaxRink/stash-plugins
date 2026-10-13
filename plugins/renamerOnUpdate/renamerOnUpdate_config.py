@@ -327,6 +327,11 @@ use_ascii = False
 # Prevents filenames like "[1080p]_1.mp4" for unscraped scenes.
 require_fields = True
 
+# Normalize moved file/directory ownership and mode to UID/GID 99:100.
+# Disabled by default: containerized deployments should manage media ACLs
+# outside this plugin.
+normalize_permissions = False
+
 ######################################
 #         Exclude Settings           #
 # ---------------------------------- #
