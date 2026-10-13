@@ -27,7 +27,7 @@ class _Config(types.ModuleType):
             "lowercase_Filename": False, "titlecase_Filename": False, "filename_splitchar": " ",
             "removecharac_Filename": "", "replace_words": {}, "performer_splitchar": ", ",
             "performer_limit": 99, "performer_limit_keep": True, "performer_sort": "name",
-            "performer_ignoreGender": False, "prevent_title_performer": False,
+            "performer_ignoreGender": [], "prevent_title_performer": False,
             "duplicate_suffix": ["", "_1", "_2"], "prepositions_list": [],
             "prepositions_removal": False, "squeeze_studio_names": False, "rating_format": "",
             "tags_splitchar": ", ", "tags_whitelist": [], "tags_blacklist": [],
@@ -45,7 +45,10 @@ class _Config(types.ModuleType):
 def _scene():
     return {
         "id": "1", "title": "Scene", "date": "2024-01-01", "organized": True,
-        "tags": [], "studio": None, "performers": [], "stash_ids": [],
+        "tags": [], "studio": None,
+        "performers": [{"id": "p1", "name": "Alice", "gender": "FEMALE",
+                        "favorite": False, "rating100": 0, "stash_ids": []}],
+        "stash_ids": [],
         "files": [{"id": "77", "path": "/library/inbox/Scene.mkv",
                    "video_codec": "h264", "audio_codec": "aac", "width": 1920,
                    "height": 1080, "frame_rate": 30.0, "duration": 60.0,
@@ -58,6 +61,8 @@ def test_real_entry_refreshes_stale_dict_and_noops(tmp_path, monkeypatch):
     state_path.write_text(json.dumps(_scene()))
     os.environ["ROU_LOCK_DIR"] = str(tmp_path / "locks")
     config = _Config("config")
+    config.default_template = "$performer - $title"
+    config.order_field = ["$performer"]
     log = types.ModuleType("log")
     log.__getattr__ = lambda _name: (lambda *_args, **_kwargs: None)
     monkeypatch.setitem(sys.modules, "config", config)
@@ -118,8 +123,20 @@ def test_real_entry_refreshes_stale_dict_and_noops(tmp_path, monkeypatch):
     before = json.loads(json.dumps(stale))
     module.renamer(stale)
     assert stale == before
-    assert json.loads(state_path.read_text())["files"][0]["path"] == "/library/organized/Scene.mkv"
+    assert json.loads(state_path.read_text())["files"][0]["path"] == "/library/organized/Alice - Scene.mkv"
     assert int(state_path.with_suffix(".moves").read_text()) == 1
+
+    # A short path must preserve the performer field.  A genuinely long path
+    # may remove it, but only after the first complete template still exceeds
+    # the native 240-character limit.
+    long_scene = json.loads(state_path.read_text())
+    long_scene["title"] = "T" * 215
+    long_scene["files"][0]["path"] = "/library/inbox/long.mkv"
+    state_path.write_text(json.dumps(long_scene))
+    module.renamer(long_scene)
+    moved = json.loads(state_path.read_text())["files"][0]["path"]
+    assert moved == "/library/organized/" + ("T" * 215) + ".mkv"
+    assert len(moved) <= 240
 
 _REAL_MODULE = None
 

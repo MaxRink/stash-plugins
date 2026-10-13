@@ -1294,26 +1294,33 @@ def _renamer(scene_id, db_conn=None):
             scene_information["final_path"] = os.path.join(
                 scene_information["new_directory"], scene_information["new_filename"]
             )
-            # Preserve an already-correct file-to-suffix mapping when Stash
-            # changes the order of a scene's files (for example after a primary
-            # file switch).  Loop-index-only naming would swap two correct
-            # paths on the next hook and churn forever.
-            if len(scene_files) > 1 and template.get("filename"):
-                for candidate_index in range(min(len(scene_files), len(DUPLICATE_SUFFIX))):
-                    if candidate_index in claimed_target_indices:
-                        continue
-                    scene_information["file_index"] = candidate_index
-                    candidate_name = create_new_filename(scene_information, template["filename"])
-                    candidate_dir = create_new_path(scene_information, template) if template.get("path") else scene_information["current_directory"]
-                    candidate_path = os.path.join(candidate_dir, candidate_name)
-                    if os.path.normpath(candidate_path) == os.path.normpath(scene_information["current_path"]):
-                        scene_information["file_index"] = candidate_index
-                        scene_information["new_filename"] = candidate_name
-                        scene_information["new_directory"] = candidate_dir
-                        scene_information["final_path"] = candidate_path
-                        claimed_target_indices.add(candidate_index)
-                        break
-                    scene_information["file_index"] = i
+            if IGNORE_PATH_LENGTH or len(scene_information["final_path"]) <= 240:
+                break
+
+        # Preserve an already-correct file-to-suffix mapping when Stash changes
+        # the order of a scene's files (for example after a primary file switch).
+        # Loop-index-only naming would swap two correct paths on the next hook
+        # and churn forever.  This runs after path shortening so short paths
+        # retain all configured metadata fields.
+        if len(scene_files) > 1 and template.get("filename"):
+            for candidate_index in range(len(DUPLICATE_SUFFIX)):
+                if candidate_index in claimed_target_indices:
+                    continue
+                scene_information["file_index"] = candidate_index
+                candidate_name = create_new_filename(scene_information, template["filename"])
+                candidate_dir = (
+                    create_new_path(scene_information, template)
+                    if template.get("path")
+                    else scene_information["current_directory"]
+                )
+                candidate_path = os.path.join(candidate_dir, candidate_name)
+                if os.path.normpath(candidate_path) == os.path.normpath(scene_information["current_path"]):
+                    scene_information["new_filename"] = candidate_name
+                    scene_information["new_directory"] = candidate_dir
+                    scene_information["final_path"] = candidate_path
+                    claimed_target_indices.add(candidate_index)
+                    break
+                scene_information["file_index"] = i
 
         if check_longpath(scene_information["final_path"]):
             if (DRY_RUN or option_dryrun) and LOGFILE:
@@ -1369,6 +1376,11 @@ def _renamer(scene_id, db_conn=None):
         # abort
         if err:
             raise Exception("duplicate")
+        # Reserve the suffix selected for this file for the rest of this
+        # scene's pass, including files that are actually moved.  This keeps
+        # later files from selecting the same target after a duplicate check
+        # or a primary-file reorder.
+        claimed_target_indices.add(scene_information["file_index"])
         try:
             # Stash's native mover performs the filesystem move and database
             # update in one transaction, including conflict checks.  Keep the
