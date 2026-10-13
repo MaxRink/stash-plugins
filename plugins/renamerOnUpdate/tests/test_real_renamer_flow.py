@@ -74,7 +74,7 @@ def test_real_entry_refreshes_stale_dict_and_noops(tmp_path, monkeypatch):
                 return Response({"data": {"systemStatus": {"databaseSchema": 40}}})
             if "configuration" in query:
                 return Response({"data": {"configuration": {"general": {"databasePath": "/db/stash.sqlite"}}}})
-            scene = json.loads(state_path.read_text())
+            scene = __import__("json").loads(state_path.read_text())
             if "findScenes" in query:
                 if "scene_filter" in query:
                     return Response({"data": {"findScenes": {"count": 0, "scenes": []}}})
