@@ -1338,9 +1338,6 @@ def _renamer(scene_id, db_conn=None):
                 scene_information["new_directory"],
                 scene_information["new_filename"],
             )
-        except Exception as err:
-            log.LogError(f"Native moveFiles failed: {err}")
-            continue
             if i == 0:
                 associated_rename(scene_information)
             if template.get("path"):
