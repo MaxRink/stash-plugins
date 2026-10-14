@@ -84,6 +84,13 @@ def parse_single_scene_id(args):
         raise ValueError("single-scene task requires exactly one numeric scene_id")
     return int(value)
 
+
+def filesystem_target_occupied(target_path, current_path):
+    """Reject a native move target already occupied outside Stash's DB."""
+    if os.path.normcase(os.path.abspath(target_path)) == os.path.normcase(os.path.abspath(current_path)):
+        return False
+    return os.path.lexists(target_path)
+
 # log.LogDebug("{}".format(FRAGMENT))
 
 
@@ -1432,7 +1439,10 @@ def _renamer(scene_id, db_conn=None):
             continue
         # check if there is already a file where the new path is
         err = checking_duplicate_db(scene_information)
-        while err and scene_information["file_index"] <= len(DUPLICATE_SUFFIX):
+        fs_err = filesystem_target_occupied(
+            scene_information["final_path"], scene_information["current_path"]
+        )
+        while (err or fs_err) and scene_information["file_index"] <= len(DUPLICATE_SUFFIX):
             log.LogDebug("Duplicate filename detected, increasing file index")
             scene_information["file_index"] = scene_information["file_index"] + 1
             scene_information["new_filename"] = create_new_filename(
@@ -1444,8 +1454,11 @@ def _renamer(scene_id, db_conn=None):
             log.LogDebug(f"[NEW filename] {scene_information['new_filename']}")
             log.LogDebug(f"[NEW path] {scene_information['final_path']}")
             err = checking_duplicate_db(scene_information)
+            fs_err = filesystem_target_occupied(
+                scene_information["final_path"], scene_information["current_path"]
+            )
         # abort
-        if err:
+        if err or fs_err:
             raise Exception("duplicate")
         # Reserve the suffix selected for this file for the rest of this
         # scene's pass, including files that are actually moved.  This keeps
