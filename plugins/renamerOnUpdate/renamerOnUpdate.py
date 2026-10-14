@@ -67,6 +67,7 @@ PLUGIN_DIR = FRAGMENT_SERVER["PluginDir"]
 
 
 PLUGIN_ARGS = FRAGMENT["args"].get("mode")
+SINGLE_DRY_RUN = False
 
 
 def parse_single_scene_id(args):
@@ -1507,6 +1508,7 @@ if PLUGIN_ARGS:
                 SINGLE_SCENE_ID = parse_single_scene_id(FRAGMENT["args"])
             except ValueError as err:
                 exit_plugin(err=str(err))
+            SINGLE_DRY_RUN = FRAGMENT["args"].get("dry_run", False) is True
         if "single" not in PLUGIN_ARGS and not success:
             log.LogError("Script failed to change the value")
             exit_plugin("script finished")
@@ -1646,6 +1648,8 @@ if PLUGIN_ARGS:
         # Native moveFiles owns each transaction.
     elif "single" in PLUGIN_ARGS:
         try:
+            if SINGLE_DRY_RUN:
+                DRY_RUN = True
             renamer(SINGLE_SCENE_ID)
         except Exception as err:
             log.LogError(f"single-scene task failed: {err}")
