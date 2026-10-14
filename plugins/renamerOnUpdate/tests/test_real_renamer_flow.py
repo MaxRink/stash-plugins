@@ -178,6 +178,26 @@ def test_real_entry_refreshes_stale_dict_and_noops(tmp_path, monkeypatch):
     assert by_id["78"] == "/library/organized/Alice - Scene_1.mkv"
     assert int(state_path.with_suffix(".moves").read_text()) == 1
 
+    # A three-file scene with two existing suffixes must not reuse either
+    # occupied destination when the newly imported file is first in Stash's
+    # response.  The fake native mover rejects occupied paths like Stash.
+    three = _scene()
+    three["files"] = [
+        dict(three["files"][0], id="78", path="/library/inbox/new.mkv"),
+        dict(three["files"][0], id="77", path="/library/organized/Alice - Scene_1.mkv"),
+        dict(three["files"][0], id="79", path="/library/organized/Alice - Scene_2.mkv"),
+    ]
+    state_path.write_text(json.dumps(three))
+    state_path.with_suffix(".moves").write_text("0")
+    module._renamer(json.loads(json.dumps(three)))
+    final = json.loads(state_path.read_text())
+    by_id = {file_info["id"]: file_info["path"] for file_info in final["files"]}
+    assert by_id["78"] == "/library/organized/Alice - Scene.mkv"
+    assert by_id["77"] == "/library/organized/Alice - Scene_1.mkv"
+    assert by_id["79"] == "/library/organized/Alice - Scene_2.mkv"
+    assert len(set(by_id.values())) == 3
+    assert int(state_path.with_suffix(".moves").read_text()) == 1
+
 _REAL_MODULE = None
 
 
