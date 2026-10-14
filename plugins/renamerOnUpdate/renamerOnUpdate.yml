@@ -28,3 +28,7 @@ tasks:
     description: Rename all your scenes based on your config.
     defaultArgs:
       mode: bulk
+  - name: "Rename one scene"
+    description: Rename exactly one scene by native scene ID; refuses missing or non-numeric IDs.
+    defaultArgs:
+      mode: single

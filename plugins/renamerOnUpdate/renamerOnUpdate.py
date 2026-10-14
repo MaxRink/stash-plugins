@@ -68,6 +68,21 @@ PLUGIN_DIR = FRAGMENT_SERVER["PluginDir"]
 
 PLUGIN_ARGS = FRAGMENT["args"].get("mode")
 
+
+def parse_single_scene_id(args):
+    """Return the one explicitly requested scene ID for the bounded task.
+
+    Stash versions have passed task argument maps through slightly different
+    keys.  Accept only one scalar ID and fail closed for every other shape.
+    """
+    raw = args.get("scene_id", args.get("sceneId", args.get("id")))
+    if isinstance(raw, bool) or raw is None:
+        raise ValueError("single-scene task requires exactly one numeric scene_id")
+    value = str(raw).strip()
+    if not value.isdigit() or int(value) <= 0:
+        raise ValueError("single-scene task requires exactly one numeric scene_id")
+    return int(value)
+
 # log.LogDebug("{}".format(FRAGMENT))
 
 
@@ -1487,9 +1502,16 @@ if PLUGIN_ARGS:
             else:
                 log.LogInfo("Enable dryrun")
                 success = config_edit("dry_run", True)
-        if not success:
+        elif "single" in PLUGIN_ARGS:
+            try:
+                SINGLE_SCENE_ID = parse_single_scene_id(FRAGMENT["args"])
+            except ValueError as err:
+                exit_plugin(err=str(err))
+        if "single" not in PLUGIN_ARGS and not success:
             log.LogError("Script failed to change the value")
-        exit_plugin("script finished")
+            exit_plugin("script finished")
+        if "single" not in PLUGIN_ARGS:
+            exit_plugin("script finished")
 else:
     if not config.enable_hook:
         exit_plugin("Hook disabled")
@@ -1622,6 +1644,12 @@ if PLUGIN_ARGS:
             progress += progress_step
             log.LogProgress(progress)
         # Native moveFiles owns each transaction.
+    elif "single" in PLUGIN_ARGS:
+        try:
+            renamer(SINGLE_SCENE_ID)
+        except Exception as err:
+            log.LogError(f"single-scene task failed: {err}")
+            exit_plugin(err=str(err))
 else:
     try:
         renamer(FRAGMENT_SCENE_ID)
