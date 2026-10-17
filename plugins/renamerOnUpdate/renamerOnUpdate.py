@@ -1176,6 +1176,24 @@ def db_rename_refactor(stash_db: sqlite3.Connection, scene_info):
         )
 
 
+def normalize_permissions(new_path: str, new_dir: str) -> bool:
+    """Apply legacy ownership normalization when explicitly enabled.
+
+    Most containerized Stash deployments intentionally manage media ownership
+    and ACLs outside the plugin. Keep this opt-in so a successful move is not
+    followed by an expected permission warning.
+    """
+    if not NORMALIZE_PERMISSIONS:
+        return False
+    # File: chown nobody:users (UID 99, GID 100), chmod 664
+    os.chown(new_path, 99, 100)
+    os.chmod(new_path, 0o664)
+    # Target directory: chown nobody:users, chmod 775
+    os.chown(new_dir, 99, 100)
+    os.chmod(new_dir, 0o775)
+    return True
+
+
 def file_rename(current_path: str, new_path: str, scene_info: dict):
     # OS Rename
     if not os.path.isfile(current_path):
@@ -1221,15 +1239,8 @@ def file_rename(current_path: str, new_path: str, scene_info: dict):
     if os.path.isfile(new_path):
         log.LogInfo(f"[OS] File Renamed! ({current_path} -> {new_path})")
         try:
-            # File: chown nobody:users (UID 99, GID 100), chmod 664
-            os.chown(new_path, 99, 100)
-            os.chmod(new_path, 0o664)
-
-            # Target directory: chown nobody:users, chmod 775
-            os.chown(new_dir, 99, 100)
-            os.chmod(new_dir, 0o775)
-
-            log.LogDebug(f"Set permissions for file and directory ({new_path})")
+            if normalize_permissions(new_path, new_dir):
+                log.LogDebug(f"Set permissions for file and directory ({new_path})")
         except Exception as e:
             log.LogWarning(f"Could not set file permissions: {e}")
         if LOGFILE:
@@ -1726,6 +1737,8 @@ PATH_ONEPERFORMER = config.path_one_performer
 
 # Exclude settings - safe getattr for backwards compatibility with existing config.py files
 EXCLUDE_ENABLED = getattr(config, "exclude_enabled", False)
+# Legacy ownership normalization is opt-in; container ACLs normally own this policy.
+NORMALIZE_PERMISSIONS = getattr(config, "normalize_permissions", False)
 EXCLUDE_TAG_PATTERNS = getattr(config, "exclude_tag_patterns", {})
 EXCLUDE_STUDIO_PATTERNS = getattr(config, "exclude_studio_patterns", {})
 EXCLUDE_PATH_PATTERNS = getattr(config, "exclude_path_patterns", {})
